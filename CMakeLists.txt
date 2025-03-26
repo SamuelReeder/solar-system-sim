@@ -13,12 +13,10 @@ include_directories(${CMAKE_SOURCE_DIR}/external/glm)  # Adjust if using GLM fro
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Add your source files. Here we assume your sources are in the src/ folder.
+file(GLOB_RECURSE SOURCES src/*.cpp)
 add_executable(SolarSystemSimulation
-    src/main.cpp
+    ${SOURCES}
     external/glad/src/glad.c
-    # src/Renderer.cpp
-    # src/Simulation.cpp
-    # src/other_files.cpp
 )
 
 set_source_files_properties(${CMAKE_SOURCE_DIR}/external/glad/src/glad.c PROPERTIES LANGUAGE C)
