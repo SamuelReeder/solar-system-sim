@@ -2,6 +2,8 @@
 #include "OpenGLRenderer.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 // initialize static member
 Simulation* Simulation::currentInstance = nullptr;
@@ -9,6 +11,7 @@ Simulation* Simulation::currentInstance = nullptr;
 Simulation::Simulation()
     : lastFrameTime(0.0f), 
       deltaTime(0.0f), 
+      lastFpsLimitTime(0.0),
       firstMouse(true), 
       lastX(0.0f), 
       lastY(0.0f),
@@ -32,9 +35,22 @@ bool Simulation::initialize(int width, int height) {
     camera->setPosition(glm::vec3(0.0f, 10.0f, 30.0f));
     camera->setTarget(glm::vec3(0.0f, 0.0f, 0.0f));
     
+    // create shadow map
+    shadowMap = std::make_unique<ShadowMap>(2048, 2048);
+    
     // load shaders
-    shader = std::make_unique<Shader>();
-    if (!shader->load("shaders/planet.vert", "shaders/planet.frag")) {
+    planetShader = std::make_unique<Shader>();
+    if (!planetShader->load("shaders/planet.vert", "shaders/planet.frag")) {
+        return false;
+    }
+    
+    sunShader = std::make_unique<Shader>();
+    if (!sunShader->load("shaders/sun.vert", "shaders/sun.frag")) {
+        return false;
+    }
+    
+    shadowShader = std::make_unique<Shader>();
+    if (!shadowShader->load("shaders/shadow_mapping.vert", "shaders/shadow_mapping.frag")) {
         return false;
     }
     
@@ -55,7 +71,7 @@ bool Simulation::initialize(int width, int height) {
     
     solarSystem->initialize();
     
-    // setup GLFW callbacks
+    // setup input callbacks
     GLFWwindow* window = static_cast<GLFWwindow*>(renderer->getWindowHandle());
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
     glfwSetCursorPosCallback(window, mouseCallback);
@@ -79,6 +95,8 @@ bool Simulation::initialize(int width, int height) {
 }
 
 void Simulation::run() {
+    lastFpsLimitTime = glfwGetTime();
+    
     while (!renderer->shouldClose()) {
         // calculate delta time
         float currentTime = glfwGetTime();
@@ -93,6 +111,15 @@ void Simulation::run() {
         // swap buffers and poll events
         renderer->swapBuffers();
         renderer->pollEvents();
+        
+        // limit frame rate
+        double currentFrameTime = glfwGetTime();
+        double frameTime = currentFrameTime - lastFpsLimitTime;
+        if (frameTime < targetFrameTime) {
+            // sleep for the remaining time to hit target frame rate
+            std::this_thread::sleep_for(std::chrono::duration<double>(targetFrameTime - frameTime));
+        }
+        lastFpsLimitTime = glfwGetTime();
     }
 }
 
@@ -127,23 +154,83 @@ void Simulation::update() {
     // update solar system with time scaled
     solarSystem->update(deltaTime * 5000.0f);
     
-    // update shader with camera position for lighting
-    shader->use();
-    shader->setVec3("viewPos", camera->getPosition());
+    // get the position of the sun
+    glm::vec3 sunPosition = solarSystem->getSunPosition();
+    
+    // update shadow mapping
+    shadowMap->updateLightSpaceMatrix(sunPosition, glm::vec3(0.0f));
 }
 
 void Simulation::render() {
+    // render shadows first
+    renderShadowPass();
+    
+    // then render main scene
+    renderMainPass();
+}
+
+void Simulation::renderShadowPass() {
+    // bind shadow map FBO
+    shadowMap->bindForWriting();
+    glClear(GL_DEPTH_BUFFER_BIT);
+    
+    // use shadow shader for depth pass
+    shadowShader->use();
+    
+    // set light space matrix
+    glm::mat4 lightSpaceMatrix = shadowMap->getLightSpaceMatrix();
+    shadowShader->setMat4("lightSpaceMatrix", lightSpaceMatrix);
+    
+    // render scene from light's point of view (except sun)
+    solarSystem->renderDepth(*shadowShader);
+    
+    // reset framebuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void Simulation::renderMainPass() {
+    // restore viewport
+    int width, height;
+    glfwGetFramebufferSize(static_cast<GLFWwindow*>(renderer->getWindowHandle()), &width, &height);
+    glViewport(0, 0, width, height);
+    
+    // clear screen
     renderer->clear(glm::vec4(0.0f, 0.0f, 0.05f, 1.0f));
     
-    shader->use();
+    // bind shadow map for reading
+    shadowMap->bindForReading(0);
     
-    // set view and projection matrices
-    shader->setMat4("view", camera->getViewMatrix());
-    shader->setMat4("projection", camera->getProjectionMatrix());
+    // get the position of the sun
+    glm::vec3 sunPosition = solarSystem->getSunPosition();
     
-    // render solar system
-    solarSystem->render(*shader);
+    // render planets with shadows
+    planetShader->use();
+    
+    // set matrices
+    planetShader->setMat4("view", camera->getViewMatrix());
+    planetShader->setMat4("projection", camera->getProjectionMatrix());
+    planetShader->setMat4("lightSpaceMatrix", shadowMap->getLightSpaceMatrix());
+    
+    // set lighting properties
+    planetShader->setVec3("viewPos", camera->getPosition());
+    planetShader->setVec3("lightPos", sunPosition);
+    planetShader->setVec3("lightColor", glm::vec3(1.0f, 1.0f, 0.9f));
+    
+    // set texture
+    planetShader->setInt("shadowMap", 0); // bind to texture unit 0
+    
+    // render planets
+    solarSystem->renderPlanets(*planetShader);
+    
+    // render sun with special shader
+    sunShader->use();
+    sunShader->setMat4("view", camera->getViewMatrix());
+    sunShader->setMat4("projection", camera->getProjectionMatrix());
+    
+    // render sun
+    solarSystem->renderSun(*sunShader);
 }
+
 
 // Static callback implementations
 void Simulation::framebufferSizeCallback(GLFWwindow* window, int width, int height) {

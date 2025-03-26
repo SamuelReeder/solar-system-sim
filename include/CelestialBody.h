@@ -16,6 +16,7 @@ public:
     void render(Shader& shader);
     
     void setOrbitCenter(const glm::vec3& center);
+    void setParent(std::shared_ptr<CelestialBody> parent);
     glm::vec3 getPosition() const;
     float getRadius() const;
     const std::string& getName() const { return name; }
@@ -33,5 +34,6 @@ private:
     glm::vec3 position;
     glm::vec3 orbitCenter;
     
+    std::weak_ptr<CelestialBody> parent;
     std::shared_ptr<Sphere> mesh;
 };
